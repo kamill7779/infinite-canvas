@@ -45,9 +45,11 @@ export function listPricing() {
     return db.modelPricing.findMany({ orderBy: [{ channel: "asc" }, { model: "asc" }, { sizeTier: "asc" }] });
 }
 
-export function upsertPricing(input: { channel: string; model: string; capability: string; sizeTier: SizeTier; creditsCost: number; enabled: boolean }) {
+export async function upsertPricing(input: { channel: string; model: string; capability: string; sizeTier: SizeTier; creditsCost: number; enabled: boolean }) {
     const { channel, model, capability, sizeTier, creditsCost, enabled } = input;
     if (creditsCost < 0) throw new AppError("单价不能为负");
+    const exists = await db.aiChannel.findUnique({ where: { name: channel }, select: { id: true } });
+    if (!exists) throw new AppError("渠道不存在，请先在渠道管理中创建");
     return db.modelPricing.upsert({
         where: { channel_model_capability_sizeTier: { channel, model, capability, sizeTier } },
         update: { creditsCost, enabled },
@@ -61,6 +63,9 @@ export function listChannels() {
 }
 
 export async function upsertChannel(input: { id?: string; name: string; type: string; baseUrl: string; apiKey?: string; weight?: number; enabled?: boolean }) {
+    const duplicated = await db.aiChannel.findUnique({ where: { name: input.name }, select: { id: true } });
+    if (duplicated && duplicated.id !== input.id) throw new AppError("渠道名已存在");
+
     const base = { name: input.name, type: input.type, baseUrl: input.baseUrl, weight: input.weight ?? 1, enabled: input.enabled ?? true };
     if (input.id) {
         // 留空 apiKey 表示不修改原 Key

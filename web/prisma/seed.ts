@@ -34,6 +34,7 @@ async function main() {
         create: { id: "seed-default", name: channelName, type: "openai", baseUrl: process.env.SEED_UPSTREAM_BASEURL || "https://api.openai.com", apiKeyEnc: encrypt(upstreamKey) },
     });
 
+    const pricingChannel = channel.name;
     const model = process.env.SEED_UPSTREAM_MODEL || "gpt-image-2";
     const tiers: { sizeTier: "t1k" | "t2k" | "t4k"; cost: number }[] = [
         { sizeTier: "t1k", cost: 5 },
@@ -42,9 +43,9 @@ async function main() {
     ];
     for (const t of tiers) {
         await db.modelPricing.upsert({
-            where: { channel_model_capability_sizeTier: { channel: channelName, model, capability: "image", sizeTier: t.sizeTier } },
+            where: { channel_model_capability_sizeTier: { channel: pricingChannel, model, capability: "image", sizeTier: t.sizeTier } },
             update: { creditsCost: t.cost, enabled: true },
-            create: { channel: channelName, model, capability: "image", sizeTier: t.sizeTier, creditsCost: t.cost, enabled: true },
+            create: { channel: pricingChannel, model, capability: "image", sizeTier: t.sizeTier, creditsCost: t.cost, enabled: true },
         });
     }
     console.log(`channel=${channel.name} model=${model} pricing: 1k=5 2k=12 4k=30`);

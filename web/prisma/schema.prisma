@@ -114,6 +114,8 @@ model ModelPricing {
   creditsCost Int
   enabled     Boolean  @default(true)
 
+  aiChannel AiChannel @relation(fields: [channel], references: [name], onUpdate: Cascade, onDelete: Restrict)
+
   @@unique([channel, model, capability, sizeTier])
 }
 
@@ -160,12 +162,14 @@ enum GenStatus {
 // ── 上游渠道与平台 Key（后台配置，Key 加密存储）─────────────────
 model AiChannel {
   id        String  @id @default(cuid())
-  name      String
+  name      String  @unique
   type      String // openai / gemini / volcengine
   baseUrl   String
   apiKeyEnc String // AES-GCM 加密后的 Key，禁止明文
   weight    Int     @default(1)
   enabled   Boolean @default(true)
+
+  modelPricings ModelPricing[]
 }
 
 // ── 审计日志（后台敏感操作留痕）──────────────────────────────────

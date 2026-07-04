@@ -7,7 +7,7 @@ export async function GET() {
     return handle(async () => {
         await requireUser();
         const rows = await db.modelPricing.findMany({
-            where: { enabled: true },
+            where: { enabled: true, aiChannel: { enabled: true } },
             select: { channel: true, model: true, capability: true, sizeTier: true, creditsCost: true },
             orderBy: [{ channel: "asc" }, { model: "asc" }],
         });
