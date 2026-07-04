@@ -13,7 +13,7 @@ function optional(name: string, fallback = ""): string {
 
 export const env = {
     databaseUrl: required("DATABASE_URL"),
-    redisUrl: optional("REDIS_URL", "redis://127.0.0.1:6379"),
+    // 注：REDIS_URL 由 server/redis.ts 直接读取并做生产强制校验，不在此重复导出（避免死代码/双来源）。
     // 用于加密上游 AI Key（AiChannel.apiKeyEnc）。32 字节，hex/base64 编码。
     dataEncryptionKey: optional("DATA_ENCRYPTION_KEY"),
     // 会话 Cookie 名与有效期（天）

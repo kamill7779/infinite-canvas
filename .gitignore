@@ -8,3 +8,6 @@ data/
 *.tsbuildinfo
 .DS_Store
 .idea
+
+# 部署产物（服务器特定配置、运行时凭据）
+deploy/

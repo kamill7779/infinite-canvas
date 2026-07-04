@@ -26,6 +26,13 @@ export async function resolveModel(model: string, capability: string, sizeTier: 
     };
 }
 
+/** 按渠道 id 解析上游渠道（含解密 Key）。worker 侧执行时用它重新取 Key，避免把明文 Key 塞进队列。 */
+export async function resolveChannelById(channelId: string): Promise<ResolvedModel["channel"]> {
+    const channel = await db.aiChannel.findUnique({ where: { id: channelId } });
+    if (!channel || !channel.enabled) throw new AppError(`渠道不可用`);
+    return { id: channel.id, name: channel.name, type: channel.type, baseUrl: channel.baseUrl, apiKey: decrypt(channel.apiKeyEnc) };
+}
+
 /** 仅估算单次消耗（不解析渠道/Key），供前端展示「预计消耗」。无配置返回 null。 */
 export async function estimateCost(model: string, capability: string, sizeTier: SizeTier): Promise<number | null> {
     const pricing = await db.modelPricing.findFirst({ where: { model, capability, sizeTier, enabled: true, aiChannel: { enabled: true } }, select: { creditsCost: true } });

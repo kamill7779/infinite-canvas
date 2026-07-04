@@ -5,6 +5,14 @@ import Redis from "ioredis";
 
 const rawUrl = process.env.REDIS_URL?.trim();
 const useMemory = !rawUrl || rawUrl === "memory";
+const isNextProductionBuild = process.env.NEXT_PHASE === "phase-production-build";
+
+// 生产强制真实 Redis：限流 / 幂等锁 / 会话缓存 / 生成队列 / Pub-Sub 全依赖 Redis，
+// 内存回退只在多实例下各算各的，会静默破坏这些分布式原语。缺失即 fail-fast，禁止线上静默降级。
+// Next build 会在 NODE_ENV=production 下静态导入 API 模块收集页面数据，此时不能要求运行时 Redis。
+if (useMemory && process.env.NODE_ENV === "production" && !isNextProductionBuild) {
+    throw new Error("生产环境必须配置真实 REDIS_URL（禁止内存回退）：限流/幂等锁/会话缓存/生成队列均依赖 Redis。");
+}
 
 type Limiter = {
     rateLimit(key: string, limit: number, windowSec: number): Promise<boolean>;

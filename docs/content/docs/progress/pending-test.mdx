@@ -10,3 +10,4 @@ description: 当前版本已实现但仍需人工验证的变更项
 - Gemini 调用格式：支持拉取 Gemini 模型列表，并用于文本问答、在线 Agent 工具调用、基础生图和图生图请求。
 - 音频和视频生成：选择 Gemini 调用格式时先给出不支持提示，仍需使用 OpenAI 兼容渠道。
 - 商业化后台：模型定价与渠道名建立数据库外键关系，渠道改名后定价行应自动同步；定价保存和渠道重名需要验证错误提示是否友好。
+- 图片生成异步队列与 WebSocket 推送：`/api/generate/image` 改为预扣+入队即返回（不再同步等上游），由独立 worker 进程（BullMQ）消费生成、落 R2、结算/退点，结果经 Redis Pub/Sub → 独立 WebSocket 网关（`/api/generate/events`）推送到前端 slot；断线经 `GET /api/generate/image/:id` 补偿。**需真实 Redis + 独立 worker + WS 网关三进程**，本地 `docker compose -f docker-compose.local.yml up --build`（或 `bun run worker:image` / `bun run ws:events` 分别起后端进程）。反向代理需透传 WS 的 `Upgrade`/`Connection` 头。尚未做生产压测验证，仅完成实现与本地联调项。

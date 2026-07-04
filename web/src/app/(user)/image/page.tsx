@@ -23,9 +23,10 @@ import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
-import { formatBytes, formatDuration, getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
-import { requestEdit, requestGeneration } from "@/services/api/image";
+import { formatBytes, formatDuration, readImageMeta } from "@/lib/image-utils";
+import { enqueueEdit, enqueueGeneration, fetchImageRecord, generateEventsWsUrl, type ImageGenEvent, type ImageRecordImage, type ImageRecordStatus } from "@/services/api/image";
 import { deleteStoredImages, resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { useAuthStore } from "@/stores/use-auth-store";
 import { useAssetStore } from "@/stores/use-asset-store";
 import type { ReferenceImage } from "@/types/image";
 
@@ -41,10 +42,25 @@ type GeneratedImage = {
 };
 
 type GenerationResult = {
-    id: string;
-    status: "pending" | "success" | "failed";
+    id: string; // = clientRequestId：WebSocket 事件按它精准匹配 slot
+    clientRequestId?: string;
+    recordId?: string;
+    status: "pending" | "queued" | "running" | "success" | "failed";
     image?: GeneratedImage;
     error?: string;
+};
+
+// 一个批次的上下文：异步化后批次不再在 POST 返回时完成，改为「最后一个 slot 经 WebSocket 落定」时存日志、停计时。
+type BatchContext = {
+    total: number;
+    startedAt: number;
+    prompt: string;
+    model: string;
+    config: GenerationLogConfig;
+    references: ReferenceImage[];
+    slotIds: string[];
+    settled: Map<string, { status: "success" | "failed"; image?: GeneratedImage; error?: string }>;
+    finalized?: boolean;
 };
 
 type GenerationLog = {
@@ -102,6 +118,10 @@ export default function ImagePage() {
     const canGenerate = Boolean(prompt.trim());
     const generationCount = Math.max(1, Math.min(10, Number(config.count) || 1));
 
+    const wsRef = useRef<WebSocket | null>(null);
+    const batchRef = useRef<BatchContext | null>(null);
+    const resultsRef = useRef<GenerationResult[]>([]);
+
     useEffect(() => {
         if (!running || !startedAt) return;
         const timer = window.setInterval(() => setElapsedMs(performance.now() - startedAt), 1000);
@@ -111,6 +131,67 @@ export default function ImagePage() {
     useEffect(() => {
         void refreshLogs();
     }, []);
+
+    // resultsRef 镜像最新 results，供 WebSocket / 补偿回调（稳定闭包）读取。
+    useEffect(() => {
+        resultsRef.current = results;
+    }, [results]);
+
+    // 用户级 WebSocket 长连接：接收 running/success/failed 事件驱动 slot；断线自动重连并对未完成 slot 补偿查询。
+    useEffect(() => {
+        let closed = false;
+        let reconnectTimer = 0;
+        const scheduleReconnect = () => {
+            if (closed) return;
+            window.clearTimeout(reconnectTimer);
+            reconnectTimer = window.setTimeout(connect, 3000);
+        };
+        function connect() {
+            const url = generateEventsWsUrl();
+            if (!url) return;
+            let ws: WebSocket;
+            try {
+                ws = new WebSocket(url);
+            } catch {
+                scheduleReconnect();
+                return;
+            }
+            wsRef.current = ws;
+            ws.onopen = () => void compensateUnfinished();
+            ws.onmessage = (event) => handleEvent(typeof event.data === "string" ? event.data : "");
+            ws.onclose = () => {
+                if (!closed) scheduleReconnect();
+            };
+            ws.onerror = () => {
+                try {
+                    ws.close();
+                } catch {
+                    /* ignore */
+                }
+            };
+        }
+        connect();
+        return () => {
+            closed = true;
+            window.clearTimeout(reconnectTimer);
+            try {
+                wsRef.current?.close();
+            } catch {
+                /* ignore */
+            }
+            wsRef.current = null;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // WebSocket 是主路径；轮询只做兜底，避免反代未透传 Upgrade 或 Pub/Sub 事件丢失时结果卡在 pending。
+    useEffect(() => {
+        if (!running) return;
+        const timer = window.setInterval(() => void compensateUnfinished(), 5000);
+        void compensateUnfinished();
+        return () => window.clearInterval(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [running]);
 
     const addReferences = async (files?: FileList | null) => {
         const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
@@ -145,59 +226,44 @@ export default function ImagePage() {
     };
 
     const generate = async () => {
-        const text = prompt.trim();
-        if (!text) {
-            toast.error("请输入生图提示词");
-            return;
-        }
-        if (!isAiConfigReady(effectiveConfig, model)) {
-            toast.warning("请先完成配置");
-            openConfigDialog(true);
-            return;
-        }
-
         const snapshot = buildRequestSnapshot();
         if (!snapshot) return;
+        const text = snapshot.text;
 
+        const slotIds = Array.from({ length: generationCount }, () => nanoid());
+        const batchStartedAt = performance.now();
         setElapsedMs(0);
         setRunning(true);
         setPreviewLog(null);
-        setResults(Array.from({ length: generationCount }, () => ({ id: nanoid(), status: "pending" })));
-        const batchStartedAt = performance.now();
+        setResults(slotIds.map((id) => ({ id, clientRequestId: id, status: "pending" as const })));
         setStartedAt(batchStartedAt);
+        batchRef.current = {
+            total: generationCount,
+            startedAt: batchStartedAt,
+            prompt: text,
+            model,
+            config: { model: snapshot.config.model, imageModel: snapshot.config.imageModel, quality: snapshot.config.quality, size: snapshot.config.size, count: String(generationCount) },
+            references: snapshot.references,
+            slotIds,
+            settled: new Map(),
+        };
 
-        const tasks = Array.from({ length: generationCount }, (_, index) => runGenerationSlot(index, snapshot));
-
-        const result = await Promise.allSettled(tasks);
-        const successImages = result.filter((item): item is PromiseFulfilledResult<GeneratedImage> => item.status === "fulfilled").map((item) => item.value);
-        const successCount = successImages.length;
-        const failCount = generationCount - successCount;
-        const failed = result.find((item): item is PromiseRejectedResult => item.status === "rejected");
-
-        try {
-            const logImages = await Promise.all(
-                successImages.map(async (image) => {
-                    const stored = await uploadImage(image.dataUrl);
-                    return { ...image, dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType };
-                }),
-            );
-            saveLog(
-                buildLog({
-                    prompt: text,
-                    model,
-                    config: { ...snapshot.config, count: String(generationCount) },
-                    references: snapshot.references,
-                    durationMs: performance.now() - batchStartedAt,
-                    successCount,
-                    failCount,
-                    status: successCount ? "成功" : "失败",
-                    images: logImages,
-                }),
-            );
-            successCount ? toast.success("图片已生成") : toast.error(failed?.reason instanceof Error ? failed.reason.message : "生成失败");
-        } finally {
-            setRunning(false);
-        }
+        // 一图一请求：每个 slot 各发一个 POST 入队。POST 只等到「入队成功」，不等生图；结果经 WebSocket 回填。
+        await Promise.allSettled(
+            slotIds.map(async (clientRequestId) => {
+                try {
+                    const task = snapshot.references.length
+                        ? await enqueueEdit(snapshot.config, text, snapshot.references, clientRequestId)
+                        : await enqueueGeneration(snapshot.config, text, clientRequestId);
+                    // 若事件已抢先把 slot 推进到 running/success，则不回退到 queued。
+                    setResults((value) => value.map((r) => (r.clientRequestId === clientRequestId ? { ...r, recordId: task.recordId, status: r.status === "pending" ? "queued" : r.status } : r)));
+                } catch (error) {
+                    const msg = error instanceof Error ? error.message : "生成失败";
+                    setResults((value) => value.map((r) => (r.clientRequestId === clientRequestId ? { ...r, status: "failed", error: msg } : r)));
+                    settleSlot(clientRequestId, { status: "failed", error: msg });
+                }
+            }),
+        );
     };
 
     const downloadImage = (image: GeneratedImage, index: number) => {
@@ -237,9 +303,11 @@ export default function ImagePage() {
     };
 
     const createSession = () => {
+        batchRef.current = null;
         setPrompt("");
         setReferences([]);
         setResults([]);
+        setRunning(false);
         setElapsedMs(0);
         setStartedAt(0);
         setSelectedLogIds([]);
@@ -289,28 +357,139 @@ export default function ImagePage() {
         return { text, config: { ...effectiveConfig, model, count: "1" }, references: [...references] };
     };
 
-    const runGenerationSlot = async (index: number, snapshot: { text: string; config: AiConfig; references: ReferenceImage[] }) => {
-        const itemStartedAt = performance.now();
+    // ── 事件驱动：把 WebSocket / 补偿查询的结果落到对应 slot，并在批次全部落定时存日志、停计时 ──
+
+    const finalizeBatch = async () => {
+        const batch = batchRef.current;
+        if (!batch || batch.finalized || batch.settled.size < batch.total) return;
+        batch.finalized = true;
+        const outcomes = [...batch.settled.values()];
+        const images = outcomes.filter((o) => o.status === "success" && o.image).map((o) => o.image as GeneratedImage);
+        const successCount = images.length;
+        const logImages = await Promise.all(
+            images.map(async (image) => {
+                const stored = await uploadImage(image.dataUrl);
+                return { ...image, dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType };
+            }),
+        );
+        saveLog(
+            buildLog({
+                prompt: batch.prompt,
+                model: batch.model,
+                config: batch.config,
+                references: batch.references,
+                durationMs: performance.now() - batch.startedAt,
+                successCount,
+                failCount: batch.total - successCount,
+                status: successCount ? "成功" : "失败",
+                images: logImages,
+            }),
+        );
+        successCount ? toast.success("图片已生成") : toast.error(outcomes.find((o) => o.status === "failed")?.error || "生成失败");
+        batchRef.current = null;
+        setRunning(false);
+    };
+
+    // 记录某 slot 的终态；批次内最后一个落定时触发存日志（异步化后批次不再在 POST 返回时完成）。
+    const settleSlot = (clientRequestId: string, outcome: { status: "success" | "failed"; image?: GeneratedImage; error?: string }) => {
+        const batch = batchRef.current;
+        if (!batch || !batch.slotIds.includes(clientRequestId) || batch.settled.has(clientRequestId)) return;
+        batch.settled.set(clientRequestId, outcome);
+        void finalizeBatch();
+    };
+
+    const imageFromRecord = async (img: ImageRecordImage): Promise<GeneratedImage> => {
+        const meta = await readImageMeta(img.url).catch(() => ({ width: img.width ?? 0, height: img.height ?? 0 }));
+        const started = batchRef.current?.startedAt ?? performance.now();
+        return {
+            id: img.id,
+            dataUrl: img.url,
+            durationMs: Math.max(0, performance.now() - started),
+            width: img.width ?? meta.width,
+            height: img.height ?? meta.height,
+            bytes: img.bytes ?? 0,
+            mimeType: img.mimeType,
+        };
+    };
+
+    // WebSocket 事件与补偿查询共用：按 clientRequestId / recordId 命中 slot 并更新状态。
+    const applyOutcome = async (match: { clientRequestId?: string; recordId?: string }, status: ImageRecordStatus, images: ImageRecordImage[], errorMsg?: string) => {
+        const hit = (r: GenerationResult) => Boolean((match.clientRequestId && r.clientRequestId === match.clientRequestId) || (match.recordId && r.recordId === match.recordId));
+        if (status === "running") {
+            setResults((value) => value.map((r) => (hit(r) && r.status !== "success" && r.status !== "failed" ? { ...r, status: "running" } : r)));
+            return;
+        }
+        if (status === "success") {
+            const image = images[0] ? await imageFromRecord(images[0]) : undefined;
+            setResults((value) => value.map((r) => (hit(r) ? { ...r, status: "success", image, error: undefined } : r)));
+            if (match.clientRequestId) settleSlot(match.clientRequestId, { status: "success", image });
+            return;
+        }
+        if (status === "failed") {
+            setResults((value) => value.map((r) => (hit(r) ? { ...r, status: "failed", error: errorMsg || "生成失败" } : r)));
+            if (match.clientRequestId) settleSlot(match.clientRequestId, { status: "failed", error: errorMsg });
+        }
+    };
+
+    const handleEvent = (raw: string) => {
+        if (!raw) return;
+        let event: ImageGenEvent;
         try {
-            const result = snapshot.references.length ? await requestEdit(snapshot.config, snapshot.text, snapshot.references) : await requestGeneration(snapshot.config, snapshot.text);
-            const image = result[0];
-            if (!image) throw new Error("接口没有返回图片");
-            const meta = await readImageMeta(image.dataUrl);
-            const nextImage = { id: image.id, dataUrl: image.dataUrl, durationMs: performance.now() - itemStartedAt, width: meta.width, height: meta.height, bytes: getDataUrlByteSize(image.dataUrl) };
-            setResults((value) => updateResultAt(value, index, { status: "success", image: nextImage }));
-            return nextImage;
-        } catch (error) {
-            setResults((value) => updateResultAt(value, index, { status: "failed", error: error instanceof Error ? error.message : "生成失败" }));
-            throw error;
+            event = JSON.parse(raw) as ImageGenEvent;
+        } catch {
+            return;
+        }
+        if (event.type === "ping") {
+            try {
+                wsRef.current?.send(JSON.stringify({ type: "pong", ts: event.ts }));
+            } catch {
+                /* ignore */
+            }
+            return;
+        }
+        const match = { clientRequestId: event.clientRequestId, recordId: event.recordId };
+        if (event.type === "image.running") void applyOutcome(match, "running", []);
+        else if (event.type === "image.success") {
+            useAuthStore.getState().setBalance(event.balance);
+            void applyOutcome(match, "success", event.images);
+        } else if (event.type === "image.failed") {
+            useAuthStore.getState().setBalance(event.balance);
+            void applyOutcome(match, "failed", [], event.errorMsg);
+        }
+    };
+
+    // 断线重连 / 初始化 / 轮询兜底：对未完成 slot 做状态补偿查询。
+    const compensateUnfinished = async () => {
+        const targets = resultsRef.current.filter((r) => r.recordId && r.status !== "success" && r.status !== "failed");
+        for (const target of targets) {
+            try {
+                const rec = await fetchImageRecord(target.recordId as string);
+                await applyOutcome({ clientRequestId: target.clientRequestId, recordId: target.recordId }, rec.status, rec.images, rec.errorMsg);
+            } catch {
+                /* 忽略：后续事件或下次补偿再兜 */
+            }
         }
     };
 
     const retryResult = (index: number) => {
         const snapshot = buildRequestSnapshot();
         if (!snapshot) return;
+        const target = results[index];
+        if (!target) return;
+        const clientRequestId = target.clientRequestId || target.id;
         setPreviewLog(null);
-        setResults((value) => updateResultAt(value, index, { status: "pending", error: undefined, image: undefined }));
-        void runGenerationSlot(index, snapshot).catch(() => {});
+        setResults((value) => updateResultAt(value, index, { status: "pending", error: undefined, image: undefined, clientRequestId, recordId: undefined }));
+        // 重试 = 重新入队一个 job；结果同样经 WebSocket 回填。
+        void (async () => {
+            try {
+                const task = snapshot.references.length
+                    ? await enqueueEdit(snapshot.config, snapshot.text, snapshot.references, clientRequestId)
+                    : await enqueueGeneration(snapshot.config, snapshot.text, clientRequestId);
+                setResults((value) => updateResultAt(value, index, { recordId: task.recordId, status: "queued" }));
+            } catch (error) {
+                setResults((value) => updateResultAt(value, index, { status: "failed", error: error instanceof Error ? error.message : "生成失败" }));
+            }
+        })();
     };
 
     return (

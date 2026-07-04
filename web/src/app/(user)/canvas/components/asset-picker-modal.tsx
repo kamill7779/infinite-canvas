@@ -11,6 +11,7 @@ export type InsertAssetPayload = { kind: "text"; content: string; title: string 
 
 type Props = {
     open: boolean;
+    defaultTab?: string;
     onInsert: (payload: InsertAssetPayload) => void;
     onClose: () => void;
 };

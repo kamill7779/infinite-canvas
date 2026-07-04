@@ -1,9 +1,59 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: infinite-canvas-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
   app:
     image: infinite-canvas:local
     build:
       context: .
       dockerfile: Dockerfile
+    depends_on:
+      - redis
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379
     ports:
       - "3000:3000"
     restart: unless-stopped
+
+  worker:
+    image: infinite-canvas:local
+    depends_on:
+      - redis
+      - app
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379
+      IMAGE_WORKER_CONCURRENCY: "8"
+    command: ["sh", "-c", "cd /app/web && node worker.cjs"]
+    restart: unless-stopped
+
+  ws:
+    image: infinite-canvas:local
+    container_name: infinite-canvas-ws
+    depends_on:
+      - redis
+      - app
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379
+      WS_PORT: "3001"
+    command: ["sh", "-c", "cd /app/web && node ws-server.cjs"]
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+volumes:
+  redis-data:

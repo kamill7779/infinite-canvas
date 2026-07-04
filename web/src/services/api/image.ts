@@ -378,8 +378,9 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
     for (;;) {
         const match = state.buffer.match(/\r?\n\r?\n/);
         if (!match) break;
-        consumeResponseStreamBlock(state.buffer.slice(0, match.index), state, onDelta);
-        state.buffer = state.buffer.slice(match.index + match[0].length);
+        const index = match.index ?? 0;
+        consumeResponseStreamBlock(state.buffer.slice(0, index), state, onDelta);
+        state.buffer = state.buffer.slice(index + match[0].length);
     }
     if (flush && state.buffer.trim()) {
         consumeResponseStreamBlock(state.buffer, state, onDelta);
@@ -529,8 +530,9 @@ function consumeGeminiStreamText(state: GeminiStreamState, text: string, onDelta
     for (;;) {
         const match = state.buffer.match(/\r?\n\r?\n/);
         if (!match) break;
-        consumeGeminiStreamBlock(state.buffer.slice(0, match.index), state, onDelta);
-        state.buffer = state.buffer.slice(match.index + match[0].length);
+        const index = match.index ?? 0;
+        consumeGeminiStreamBlock(state.buffer.slice(0, index), state, onDelta);
+        state.buffer = state.buffer.slice(index + match[0].length);
     }
     if (flush && state.buffer.trim()) {
         consumeGeminiStreamBlock(state.buffer, state, onDelta);
@@ -628,9 +630,24 @@ async function refreshBalanceSoon() {
     }
 }
 
-type ProxyImageBody = { mode: "generation" | "edit"; model: string; prompt: string; size?: string; quality?: string; count: number; references?: string[]; mask?: string };
+// ── 异步入队：一图一请求。POST 立即返回 pending 任务信息，图片经 WebSocket 事件回填 ──
 
-async function requestProxyImages(body: ProxyImageBody, options?: RequestOptions): Promise<{ id: string; dataUrl: string }[]> {
+export type EnqueuedImageTask = { recordId: string; jobId: string; clientRequestId: string; status: "pending" };
+export type ImageRecordStatus = "pending" | "running" | "success" | "failed";
+export type ImageRecordImage = { id: string; url: string; width?: number; height?: number; bytes?: number; mimeType?: string };
+export type ImageRecord = { recordId: string; clientRequestId?: string; status: ImageRecordStatus; images: ImageRecordImage[]; errorMsg?: string; creditsCost: number; balance: number };
+export type GeneratedProxyImage = { id: string; dataUrl: string };
+
+// WebSocket 事件（与 server/queue/image-events.ts 的 payload 对齐；ping 为网关心跳）。
+export type ImageGenEvent =
+    | { type: "image.running"; recordId: string; clientRequestId?: string; status: "running" }
+    | { type: "image.success"; recordId: string; clientRequestId?: string; status: "success"; images: ImageRecordImage[]; balance: number }
+    | { type: "image.failed"; recordId: string; clientRequestId?: string; status: "failed"; errorMsg: string; balance: number }
+    | { type: "ping"; ts: number };
+
+type EnqueueImageBody = { clientRequestId: string; mode: "generation" | "edit"; model: string; prompt: string; size?: string; quality?: string; references?: string[]; mask?: string };
+
+async function enqueueProxyImage(body: EnqueueImageBody, options?: RequestOptions): Promise<EnqueuedImageTask> {
     const res = await fetch("/api/generate/image", {
         method: "POST",
         credentials: "include",
@@ -638,32 +655,69 @@ async function requestProxyImages(body: ProxyImageBody, options?: RequestOptions
         body: JSON.stringify(body),
         signal: options?.signal,
     });
-    const payload = (await res.json().catch(() => null)) as { code?: number; data?: { images?: { id: string; url: string }[]; balance?: number }; msg?: string } | null;
+    const payload = (await res.json().catch(() => null)) as { code?: number; data?: (EnqueuedImageTask & { balance?: number }) | null; msg?: string } | null;
     if (!payload) throw new Error("服务器无响应");
     if (payload.code !== 0 || !payload.data) throw new Error(payload.msg || "生成失败");
-    // 扣费后实时同步顶栏余额，无需刷新页面
+    // 预扣后实时同步顶栏余额
     if (typeof payload.data.balance === "number") useAuthStore.getState().setBalance(payload.data.balance);
-    const images = payload.data.images ?? [];
-    if (!images.length) throw new Error("接口没有返回图片");
-    // 返回服务端持久 URL（落库到画布节点 content，刷新后可直接从服务端加载）。
-    return images.map((img) => ({ id: img.id, dataUrl: img.url }));
+    return { recordId: payload.data.recordId, jobId: payload.data.jobId, clientRequestId: payload.data.clientRequestId, status: "pending" };
 }
 
-export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
-    const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
-    return requestProxyImages({ mode: "generation", model: bareModelName(config), prompt: withSystemPrompt(config, prompt), size: config.size, quality: config.quality, count: n }, options);
+export async function enqueueGeneration(config: AiConfig, prompt: string, clientRequestId: string, options?: RequestOptions): Promise<EnqueuedImageTask> {
+    return enqueueProxyImage({ clientRequestId, mode: "generation", model: bareModelName(config), prompt: withSystemPrompt(config, prompt), size: config.size, quality: config.quality }, options);
 }
 
-export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions) {
-    const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
+export async function enqueueEdit(config: AiConfig, prompt: string, references: ReferenceImage[], clientRequestId: string, mask?: ReferenceImage, options?: RequestOptions): Promise<EnqueuedImageTask> {
     const requestPrompt = buildImageReferencePromptText(prompt, references);
     // 参考图/蒙版在前端解析成 dataUrl 后交给代理（服务端再解码上传上游）
     const refDataUrls = await Promise.all(references.map((image) => imageToDataUrl(image)));
     const maskDataUrl = mask ? mask.dataUrl : undefined;
-    return requestProxyImages(
-        { mode: "edit", model: bareModelName(config), prompt: withSystemPrompt(config, requestPrompt), size: config.size, quality: config.quality, count: n, references: refDataUrls, mask: maskDataUrl },
+    return enqueueProxyImage(
+        { clientRequestId, mode: "edit", model: bareModelName(config), prompt: withSystemPrompt(config, requestPrompt), size: config.size, quality: config.quality, references: refDataUrls, mask: maskDataUrl },
         options,
     );
+}
+
+async function waitForImageTask(task: EnqueuedImageTask, options?: RequestOptions): Promise<GeneratedProxyImage[]> {
+    const startedAt = Date.now();
+    const timeoutMs = 5 * 60_000;
+    for (;;) {
+        if (options?.signal?.aborted) throw new DOMException("请求已取消", "AbortError");
+        const record = await fetchImageRecord(task.recordId, options);
+        if (record.status === "success") return record.images.map((img) => ({ id: img.id, dataUrl: img.url }));
+        if (record.status === "failed") throw new Error(record.errorMsg || "生成失败");
+        if (Date.now() - startedAt > timeoutMs) throw new Error("生成超时，请稍后在记录中查看结果");
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+}
+
+/** 兼容画布等旧调用：保持“await 后拿图片数组”的语义；生图工作台使用 enqueueGeneration 走 WebSocket 回填。 */
+export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions): Promise<GeneratedProxyImage[]> {
+    return waitForImageTask(await enqueueGeneration(config, prompt, nanoid(), options), options);
+}
+
+/** 兼容画布等旧调用：保持“await 后拿图片数组”的语义；生图工作台使用 enqueueEdit 走 WebSocket 回填。 */
+export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions): Promise<GeneratedProxyImage[]> {
+    return waitForImageTask(await enqueueEdit(config, prompt, references, nanoid(), mask, options), options);
+}
+
+/** 单条生成状态查询（WebSocket 断线补偿 / 刷新恢复；非轮询主路径）。只能查本人记录。 */
+export async function fetchImageRecord(recordId: string, options?: RequestOptions): Promise<ImageRecord> {
+    const res = await fetch(`/api/generate/image/${encodeURIComponent(recordId)}`, { credentials: "include", signal: options?.signal });
+    const payload = (await res.json().catch(() => null)) as { code?: number; data?: ImageRecord | null; msg?: string } | null;
+    if (!payload) throw new Error("服务器无响应");
+    if (payload.code !== 0 || !payload.data) throw new Error(payload.msg || "查询失败");
+    if (typeof payload.data.balance === "number") useAuthStore.getState().setBalance(payload.data.balance);
+    return payload.data;
+}
+
+/** 生成事件 WebSocket 地址。留空环境变量=同源 /api/generate/events（生产走反代）；否则用配置值（本地直连网关端口）。 */
+export function generateEventsWsUrl(): string {
+    const configured = process.env.NEXT_PUBLIC_GENERATE_WS_URL;
+    if (configured) return configured;
+    if (typeof window === "undefined") return "";
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/api/generate/events`;
 }
 
 export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {

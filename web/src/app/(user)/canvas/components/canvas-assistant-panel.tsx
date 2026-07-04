@@ -807,7 +807,7 @@ function OnlineAgentLogView({ logs, theme, context, onClear }: { logs: OnlineAge
     const content = mode === "text" ? formatOnlineLogText(logs, context) : formatOnlineLogJson(logs, context);
     const lastError = [...logs].reverse().find((item) => /错误|失败|error/i.test(`${item.title}\n${stringifyLog(item.data)}`));
     const copy = async (value = content) => {
-        if (copyToClipboard(value)) return;
+        if (await copyToClipboard(value)) return;
         textareaRef.current?.focus();
         textareaRef.current?.select();
     };
@@ -1268,7 +1268,7 @@ async function buildToolAgentMessages(snapshot: CanvasAgentSnapshot, history: Ca
         ...history
             .filter((message) => message.role === "user" || message.role === "assistant" || message.role === "system")
             .slice(-8)
-            .map((message): ResponseInputMessage => ({ role: message.role, content: message.text })),
+            .map((message): ResponseInputMessage => ({ role: message.role as "system" | "user" | "assistant", content: message.text })),
         {
             role: "user",
             content: [

@@ -47,9 +47,7 @@ export async function generateImageOpenAI(channel: UpstreamChannel, input: Image
 
 function parseImagePayload(payload: { id?: string; data?: Array<{ b64_json?: string; url?: string }>; error?: { message?: string } }): ImageGenResult {
     if (payload.error?.message) throw new AppError(payload.error.message);
-    const images = (payload.data ?? [])
-        .map((item) => (item.b64_json ? { buffer: Buffer.from(item.b64_json, "base64"), mimeType: "image/png" } : null))
-        .filter((x): x is { buffer: Buffer; mimeType: string } => Boolean(x));
+    const images: ImageGenResult["images"] = (payload.data ?? []).flatMap((item) => (item.b64_json ? [{ buffer: Buffer.from(item.b64_json, "base64"), mimeType: "image/png" }] : []));
     if (!images.length) throw new AppError("上游没有返回图片");
     return { images, upstreamId: payload.id };
 }

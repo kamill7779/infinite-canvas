@@ -1,7 +1,58 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: infinite-canvas-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
   app:
     image: ghcr.io/basketikun/infinite-canvas:latest
     container_name: infinite-canvas
+    depends_on:
+      - redis
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # 生产强制真实 Redis：缺失则 web/worker 均 fail-fast（见 web/src/server/redis.ts）
+      REDIS_URL: redis://redis:6379
     ports:
       - "3000:3000"
     restart: unless-stopped
+    # CMD 默认 node server.js
+
+  worker:
+    image: ghcr.io/basketikun/infinite-canvas:latest
+    depends_on:
+      - redis
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379
+      IMAGE_WORKER_CONCURRENCY: "8"
+    # 与 web 同镜像不同进程；worker.cjs 由 build 阶段 esbuild 打进 standalone。
+    command: ["sh", "-c", "cd /app/web && node worker.cjs"]
+    restart: unless-stopped
+    # 独立扩容：docker compose up -d --scale worker=3
+
+  ws:
+    image: ghcr.io/basketikun/infinite-canvas:latest
+    container_name: infinite-canvas-ws
+    depends_on:
+      - redis
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379
+      WS_PORT: "3001"
+    # 独立 WebSocket 事件网关；反向代理需把 /api/generate/events 透传到本服务并转发 Upgrade 头。
+    command: ["sh", "-c", "cd /app/web && node ws-server.cjs"]
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+volumes:
+  redis-data:
