@@ -1,5 +1,6 @@
 import axios from "axios";
 
+import { apiUrl } from "@/services/api/client";
 import { buildApiUrl, resolveModelRequestConfig, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
@@ -7,6 +8,7 @@ import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
 import { imageToDataUrl } from "@/services/image-storage";
 import { useAuthStore } from "@/stores/use-auth-store";
 import type { ReferenceImage } from "@/types/image";
+import { waitForImageTaskRecord } from "./image-task";
 
 export type AiTextMessage = {
     role: "system" | "user" | "assistant";
@@ -390,7 +392,7 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
 
 async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
     // 文本同样改走平台代理（独立的 text 渠道，服务端持 Key、扣算力点），SSE 原样透传给现有解析器。
-    const response = await fetch("/api/generate/text", {
+    const response = await fetch(apiUrl("/api/generate/text"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
@@ -614,15 +616,15 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
 }
 
 // ── 平台代理：生成请求改走自家后端（服务端持 Key、扣算力点），前端不再直连上游 ──
-// 取裸模型名（去掉 "channelId::" 前缀），对应后端 ModelPricing.model。
-function bareModelName(config: AiConfig) {
-    return (config.model || config.imageModel || "").split("::").pop() || "";
+// 平台模型值保留 "channel::model"，后端会按渠道精确解析；裸模型名仍兼容旧配置。
+function platformImageModel(config: AiConfig) {
+    return config.model || config.imageModel || "";
 }
 
 // 文本走 SSE，余额不在响应体里；完成后异步拉一次余额同步顶栏（fire-and-forget）。
 async function refreshBalanceSoon() {
     try {
-        const res = await fetch("/api/credits/balance", { credentials: "include" });
+        const res = await fetch(apiUrl("/api/credits/balance"), { credentials: "include" });
         const json = (await res.json()) as { code: number; data?: { balance: number } };
         if (json.code === 0 && json.data) useAuthStore.getState().setBalance(json.data.balance);
     } catch {
@@ -648,7 +650,7 @@ export type ImageGenEvent =
 type EnqueueImageBody = { clientRequestId: string; mode: "generation" | "edit"; model: string; prompt: string; size?: string; quality?: string; references?: string[]; mask?: string };
 
 async function enqueueProxyImage(body: EnqueueImageBody, options?: RequestOptions): Promise<EnqueuedImageTask> {
-    const res = await fetch("/api/generate/image", {
+    const res = await fetch(apiUrl("/api/generate/image"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -664,7 +666,7 @@ async function enqueueProxyImage(body: EnqueueImageBody, options?: RequestOption
 }
 
 export async function enqueueGeneration(config: AiConfig, prompt: string, clientRequestId: string, options?: RequestOptions): Promise<EnqueuedImageTask> {
-    return enqueueProxyImage({ clientRequestId, mode: "generation", model: bareModelName(config), prompt: withSystemPrompt(config, prompt), size: config.size, quality: config.quality }, options);
+    return enqueueProxyImage({ clientRequestId, mode: "generation", model: platformImageModel(config), prompt: withSystemPrompt(config, prompt), size: config.size, quality: config.quality }, options);
 }
 
 export async function enqueueEdit(config: AiConfig, prompt: string, references: ReferenceImage[], clientRequestId: string, mask?: ReferenceImage, options?: RequestOptions): Promise<EnqueuedImageTask> {
@@ -673,22 +675,14 @@ export async function enqueueEdit(config: AiConfig, prompt: string, references: 
     const refDataUrls = await Promise.all(references.map((image) => imageToDataUrl(image)));
     const maskDataUrl = mask ? mask.dataUrl : undefined;
     return enqueueProxyImage(
-        { clientRequestId, mode: "edit", model: bareModelName(config), prompt: withSystemPrompt(config, requestPrompt), size: config.size, quality: config.quality, references: refDataUrls, mask: maskDataUrl },
+        { clientRequestId, mode: "edit", model: platformImageModel(config), prompt: withSystemPrompt(config, requestPrompt), size: config.size, quality: config.quality, references: refDataUrls, mask: maskDataUrl },
         options,
     );
 }
 
 async function waitForImageTask(task: EnqueuedImageTask, options?: RequestOptions): Promise<GeneratedProxyImage[]> {
-    const startedAt = Date.now();
-    const timeoutMs = 5 * 60_000;
-    for (;;) {
-        if (options?.signal?.aborted) throw new DOMException("请求已取消", "AbortError");
-        const record = await fetchImageRecord(task.recordId, options);
-        if (record.status === "success") return record.images.map((img) => ({ id: img.id, dataUrl: img.url }));
-        if (record.status === "failed") throw new Error(record.errorMsg || "生成失败");
-        if (Date.now() - startedAt > timeoutMs) throw new Error("生成超时，请稍后在记录中查看结果");
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-    }
+    const images = await waitForImageTaskRecord((taskOptions) => fetchImageRecord(task.recordId, taskOptions), options);
+    return images.map((img) => ({ id: img.id, dataUrl: img.url }));
 }
 
 /** 兼容画布等旧调用：保持“await 后拿图片数组”的语义；生图工作台使用 enqueueGeneration 走 WebSocket 回填。 */
@@ -703,7 +697,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 
 /** 单条生成状态查询（WebSocket 断线补偿 / 刷新恢复；非轮询主路径）。只能查本人记录。 */
 export async function fetchImageRecord(recordId: string, options?: RequestOptions): Promise<ImageRecord> {
-    const res = await fetch(`/api/generate/image/${encodeURIComponent(recordId)}`, { credentials: "include", signal: options?.signal });
+    const res = await fetch(apiUrl(`/api/generate/image/${encodeURIComponent(recordId)}`), { credentials: "include", signal: options?.signal });
     const payload = (await res.json().catch(() => null)) as { code?: number; data?: ImageRecord | null; msg?: string } | null;
     if (!payload) throw new Error("服务器无响应");
     if (payload.code !== 0 || !payload.data) throw new Error(payload.msg || "查询失败");
@@ -715,13 +709,20 @@ export async function fetchImageRecord(recordId: string, options?: RequestOption
 export function generateEventsWsUrl(): string {
     const configured = process.env.NEXT_PUBLIC_GENERATE_WS_URL;
     if (configured) return configured;
+    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
+    if (apiBase) {
+        const u = new URL(apiUrl("/api/generate/events"));
+        u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
+        return u.toString();
+    }
     if (typeof window === "undefined") return "";
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/api/generate/events`;
 }
 
 export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
+    const selectedModel = config.textModel || config.model;
+    const requestConfig = resolveModelRequestConfig(config, selectedModel);
     try {
         if (requestConfig.apiFormat === "gemini") {
             const answer = (await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages), onDelta, options)).content || "没有返回内容";
@@ -729,7 +730,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
             return answer;
         }
         const answer = (await requestStreamingResponse(requestConfig, {
-            model: requestConfig.model,
+            model: selectedModel,
             input: toResponseInput(withSystemMessage(requestConfig, messages)),
         }, onDelta, options)).content || "没有返回内容";
         if (answer === "没有返回内容") onDelta(answer);
@@ -740,13 +741,14 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
 }
 
 export async function requestToolResponse(config: AiConfig, messages: ResponseInputMessage[], tools: ResponseFunctionTool[], toolChoice: ToolChoice = "auto", onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
+    const selectedModel = config.textModel || config.model;
+    const requestConfig = resolveModelRequestConfig(config, selectedModel);
     try {
         if (requestConfig.apiFormat === "gemini") {
             return await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages, toGeminiToolOptions(tools, toolChoice)), onDelta, options);
         }
         return await requestStreamingResponse(requestConfig, {
-            model: requestConfig.model,
+            model: selectedModel,
             input: toResponseInput(withSystemMessage(requestConfig, messages)),
             tools: tools.map(toResponseTool),
             tool_choice: toolChoice,

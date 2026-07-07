@@ -11,3 +11,6 @@ description: 当前版本已实现但仍需人工验证的变更项
 - 音频和视频生成：选择 Gemini 调用格式时先给出不支持提示，仍需使用 OpenAI 兼容渠道。
 - 商业化后台：模型定价与渠道名建立数据库外键关系，渠道改名后定价行应自动同步；定价保存和渠道重名需要验证错误提示是否友好。
 - 图片生成异步队列与 WebSocket 推送：`/api/generate/image` 改为预扣+入队即返回（不再同步等上游），由独立 worker 进程（BullMQ）消费生成、落 R2、结算/退点，结果经 Redis Pub/Sub → 独立 WebSocket 网关（`/api/generate/events`）推送到前端 slot；断线经 `GET /api/generate/image/:id` 补偿。**需真实 Redis + 独立 worker + WS 网关三进程**，本地 `docker compose -f docker-compose.local.yml up --build`（或 `bun run worker:image` / `bun run ws:events` 分别起后端进程）。反向代理需透传 WS 的 `Upgrade`/`Connection` 头。尚未做生产压测验证，仅完成实现与本地联调项。
+- Go 后端图片生成队列硬化：生成记录状态更新增加终态 CAS，失败退点避免覆盖成功记录；worker 抢不到用户/渠道并发槽时改为等待槽位而不是消耗业务重试，并用 Redis owner-token 信号量避免误释放；兜底对账只处理已启动且超时的 running 记录，避免误退正常 pending 任务。需用真实 Redis/PostgreSQL/Worker 做并发提交、失败重试、对账退点和 WebSocket 事件回填验证。
+- 画布图片生成轮询：画布旧调用的图片任务等待窗口已对齐后端 worker 兜底对账窗口，避免后端稍晚成功时前端先把节点标记为“生成超时”。需在画布一次生成多张图片时验证全部成功图片都能回填，且真正失败/退点任务仍显示失败。
+- Docker Go 分离部署与 R2 存储：本地 Go 分离架构已可通过 R2 环境变量启用 Cloudflare R2，新生成图片应上传到 R2；seed 在默认渠道被后台改名后应继续使用现有渠道名写入定价，避免重启时外键失败。需在真实生图后到 R2 bucket 与前端画布同时确认图片可访问。

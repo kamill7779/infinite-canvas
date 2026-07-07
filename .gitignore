@@ -1,6 +1,7 @@
 .next/
 out/
 node_modules/
+backend/
 .env*
 !.env.example
 data/
@@ -11,3 +12,6 @@ data/
 
 # 部署产物（服务器特定配置、运行时凭据）
 deploy/
+
+# 本地调试产物（curl 会话 cookie，含登录态，禁止入库）
+.local-cookies.txt

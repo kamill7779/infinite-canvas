@@ -185,11 +185,24 @@ export default function ImagePage() {
     }, []);
 
     // WebSocket 是主路径；轮询只做兜底，避免反代未透传 Upgrade 或 Pub/Sub 事件丢失时结果卡在 pending。
+    // 自适应调度：立即探一次，随后 0.8s → 2s → 5s 上限指数退避 —— 丢消息场景把可见延迟从固定 5s 压到 ~1s。
+    // 仅调整调度间隔，补偿逻辑与事件处理完全不变。
     useEffect(() => {
         if (!running) return;
-        const timer = window.setInterval(() => void compensateUnfinished(), 5000);
+        let cancelled = false;
+        let timer = 0;
+        const schedule = (delay: number) => {
+            timer = window.setTimeout(async () => {
+                await compensateUnfinished();
+                if (!cancelled) schedule(Math.min(delay * 2.5, 5000));
+            }, delay);
+        };
         void compensateUnfinished();
-        return () => window.clearInterval(timer);
+        schedule(800);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [running]);
 
