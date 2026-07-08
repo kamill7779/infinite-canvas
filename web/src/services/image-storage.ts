@@ -17,10 +17,16 @@ export type UploadedImage = {
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
 const objectUrls = new Map<string, string>();
 
+export function imageFetchCredentials(url: string): RequestCredentials {
+    if (/^https?:\/\//i.test(url)) return "omit";
+    if (url.startsWith("/")) return "include";
+    return "same-origin";
+}
+
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
     // 远程/平台 URL（http(s) 或 / 开头，且非 data:）作为持久 content：刷新后即便本地 blob 丢失，也能从服务端加载。
     const isRemote = typeof input === "string" && /^(https?:\/\/|\/)/.test(input) && !input.startsWith("data:");
-    const blob = typeof input === "string" ? await (await fetch(input, { credentials: "include" })).blob() : input;
+    const blob = typeof input === "string" ? await (await fetch(input, { credentials: imageFetchCredentials(input) })).blob() : input;
     const storageKey = `image:${nanoid()}`;
     await store.setItem(storageKey, blob);
     const objectUrl = URL.createObjectURL(blob);
@@ -55,7 +61,7 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
     const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
     if (!url || url.startsWith("data:")) return url;
-    return blobToDataUrl(await (await fetch(url)).blob());
+    return blobToDataUrl(await (await fetch(url, { credentials: imageFetchCredentials(url) })).blob());
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {

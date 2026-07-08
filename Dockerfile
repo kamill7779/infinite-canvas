@@ -7,11 +7,14 @@ RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lock
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY web ./
-# Next 构建期会静态导入服务端模块；这里只需要占位 DATABASE_URL，不连接真实库。
-ENV DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/infinite_canvas
-RUN bun run db:generate && bun run build
+ARG NEXT_PUBLIC_API_BASE_URL=
+ARG NEXT_PUBLIC_GENERATE_WS_URL=
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_PUBLIC_GENERATE_WS_URL=$NEXT_PUBLIC_GENERATE_WS_URL
+# 纯前端构建（后端已迁移到 Go；不再需要 Prisma generate / 占位 DATABASE_URL）。
+RUN bun run build
 
-# 运行镜像：同一镜像可启动 web / worker / WS 网关，由 compose command 区分。
+# 运行镜像：Next 前端（server.js）。后端由 Go(backend-api/backend-worker) 提供。
 FROM node:22-bookworm-slim
 
 WORKDIR /app
@@ -25,5 +28,5 @@ ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
-EXPOSE 3000 3001
+EXPOSE 3000
 CMD ["sh", "-c", "cd /app/web && PORT=3000 node server.js"]
