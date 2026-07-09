@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [调整] 移除本机 canvas-agent，统一使用服务端 Agent。
 + [新增] 渠道兼容Gemini格式。
 + [新增] 新增Codex App插件支持。
 

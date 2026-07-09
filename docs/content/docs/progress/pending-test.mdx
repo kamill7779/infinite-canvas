@@ -5,6 +5,11 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
+- 服务端画布 Agent：右侧仅保留统一 Agent UI，无本机/云端模式切换；登录后可新建会话、多轮对话，工具在浏览器内执行并可开关“工具确认”。
+- 服务端画布 Agent：普通闲聊（plain chat）不应进入画布工具循环；涉及读写画布时才触发工具调用与确认。
+- 服务端画布 Agent：断线重连后会话与消息可恢复；拒绝/确认工具、撤销上一次工具写入行为符合预期。
+- Codex 插件 / open-canvas 技能：只打开 `mode=new|recent|choose` 画布 URL，不再启动 `npx @basketikun/canvas-agent`，不再拼接 `agentUrl`/`agentToken`；打开后引导使用页内 Agent。
+- 产品文档：功能介绍与 Codex 插件文档已去掉本机 Agent 路径说明；历史 CHANGELOG `v0.3.0` 条目可保留。
 - Codex App 插件文档：新增插件安装教程，区分 AI 自动安装、手动安装和本仓库开发调试安装；同步优化插件 README 与技能说明。
 - 配置与用户偏好：每个模型渠道新增 OpenAI / Gemini 调用格式选择，默认 OpenAI，切换默认格式时同步更新默认 Base URL；渠道 Tab 增加紧凑醒目的提醒，说明模型是否可选需要到“模型”Tab 选择。
 - Gemini 调用格式：支持拉取 Gemini 模型列表，并用于文本问答、在线 Agent 工具调用、基础生图和图生图请求。

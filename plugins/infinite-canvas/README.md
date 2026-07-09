@@ -1,6 +1,6 @@
 # Infinite Canvas Codex Plugin
 
-这个插件把 Infinite Canvas 的本地 Canvas Agent MCP 打包给 Codex app 使用，让 Codex 能打开本地画布、读取当前节点、创建内容并触发生成流程。
+这个插件帮助 Codex App 快速打开 Infinite Canvas 网页画布。画布节点读写、创建流程与生成操作，统一使用网页内的 **Agent**（服务端编排），插件不再提供本机 Canvas MCP，也不再启动 `@basketikun/canvas-agent`。
 
 ## 安装
 
@@ -13,7 +13,7 @@
 请 clone 仓库到 ~/plugins/infinite-canvas，确认 plugins/infinite-canvas/.codex-plugin/plugin.json 存在，
 把 plugins/infinite-canvas 加入 personal marketplace，先运行 codex plugin marketplace add ~，
 再运行 codex plugin add infinite-canvas@personal。
-安装后请校验插件，并告诉我是否需要开启一个新对话来加载新技能和 MCP 工具。
+安装后请校验插件，并告诉我是否需要开启一个新对话来加载新技能。
 ```
 
 ### 手动安装
@@ -57,7 +57,7 @@ codex plugin marketplace add ~
 codex plugin add infinite-canvas@personal
 ```
 
-安装后建议开启一个新的 Codex 对话，让新的 skill 和 MCP 工具完整加载。
+安装后建议开启一个新的 Codex 对话，让新的 skill 完整加载。
 
 ### 本仓库开发调试
 
@@ -73,24 +73,30 @@ codex plugin add infinite-canvas@infinite-canvas-local
 
 1. 新建 Codex 线程后说“打开 Infinite Canvas”。
 2. 插件会确认当前仓库的本地画布服务是否已运行；端口被占用时会检查进程归属，不会把其他项目的 `3000` 当作 Infinite Canvas。
-3. 确认或启动后，插件会直接打开新建画布 URL，并自动尝试连接本地 Agent。
-4. 画布打开后，让 Codex 读取或操作当前画布。
+3. 确认或启动后，插件直接打开画布 URL（`mode=new` / `recent` / `choose`）。
+4. 画布打开后，在页面右侧使用 **Agent** 面板操作画布。
 
 常用提示：
 
 ```text
 打开 Infinite Canvas
-读取当前画布并总结节点结构
+打开后用页面里的 Agent 读取当前画布并总结节点结构
 根据选中节点创建一组生图提示词
 ```
 
+## 打开 URL
+
+仅使用以下 query，不要附加本机 Agent 参数：
+
+- 新建：`<画布网页地址>/canvas?mode=new`
+- 最近：`<画布网页地址>/canvas?mode=recent`
+- 自选：`<画布网页地址>/canvas?mode=choose`
+
 ## 工作机制
 
-插件默认通过以下命令启动 MCP，并会在 MCP 启动时自动尝试拉起本地 Agent：
-
-```bash
-npx -y @basketikun/canvas-agent mcp
-```
+- 插件通过 `open-canvas` / `canvas` 技能指导打开网页并引导使用页内 Agent。
+- **不再提供** 本地 Canvas MCP（已移除 `.mcp.json` 与 `@basketikun/canvas-agent` 启动方式）。
+- 画布 Agent 由服务端编排（`/api/agent`），工具在浏览器内执行并支持确认。
 
 ## 手动排查
 
@@ -102,10 +108,10 @@ bun install
 bun run dev
 ```
 
-然后启动本地 Agent。端口不是 `3000` 时，把 `CANVAS_URL` 换成真实本地画布地址：
+然后直接打开：
 
-```bash
-CANVAS_URL=http://localhost:3000 npx -y @basketikun/canvas-agent
+```text
+http://localhost:3000/canvas?mode=new
 ```
 
-手动排查时先从 Agent 输出或 `http://127.0.0.1:17371/config` 读取本地地址和 token，然后直接打开 `<画布网页地址>/canvas?mode=new&agentUrl=<Local URL>&agentToken=<Connect token>`。不要通过页面点击来新建画布；`mode=new` 会让网页自动创建具体画布并连接本地 Agent。
+端口不是 `3000` 时，把地址换成真实本地画布地址。不要通过页面点击来新建画布；`mode=new` 会让网页自动创建具体画布。打开后使用右侧 Agent 面板即可。
