@@ -26,18 +26,23 @@ type CanvasAssistantPanelProps = {
 export function CanvasAssistantPanel({ snapshot, onApplyOps, canUndoOps, onUndoOps, closing, onCollapse }: CanvasAssistantPanelProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const confirmTools = useCanvasAgentStore((state) => state.confirmTools);
+    const width = useCanvasAgentStore((state) => state.width);
     const setAgentState = useCanvasAgentStore((state) => state.setAgentState);
-    const [width, setWidth] = useState(520);
     const [resizing, setResizing] = useState(false);
 
     const startResize = () => {
-        const move = (event: MouseEvent) => setWidth(Math.min(760, Math.max(320, window.innerWidth - event.clientX)));
+        const move = (event: MouseEvent) => {
+            const next = Math.min(760, Math.max(320, window.innerWidth - event.clientX));
+            setAgentState({ width: next });
+        };
         const stop = () => {
             setResizing(false);
             document.body.style.cursor = "";
             document.body.style.userSelect = "";
             document.removeEventListener("mousemove", move);
             document.removeEventListener("mouseup", stop);
+            const current = useCanvasAgentStore.getState().width;
+            localStorage.setItem("canvas-agent-panel-width", String(current));
         };
         setResizing(true);
         document.body.style.cursor = "col-resize";
@@ -84,7 +89,7 @@ export function CanvasAssistantPanel({ snapshot, onApplyOps, canUndoOps, onUndoO
                         </Tooltip>
                     </div>
                 </header>
-                <CanvasServerAgentPanel embedded snapshot={snapshot} canUndoOps={canUndoOps} onApplyOps={onApplyOps} onUndoOps={onUndoOps} />
+                <CanvasServerAgentPanel snapshot={snapshot} canUndoOps={canUndoOps} onApplyOps={onApplyOps} onUndoOps={onUndoOps} />
             </motion.aside>
         </motion.div>
     );

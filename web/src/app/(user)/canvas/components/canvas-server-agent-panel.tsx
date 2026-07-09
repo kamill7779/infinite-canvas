@@ -1,9 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { App, Button } from "antd";
 import { History, Plus, RefreshCw, RotateCcw } from "lucide-react";
-import { motion } from "motion/react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -20,15 +19,12 @@ import { expandCanvasTool } from "../utils/canvas-agent-tools";
 import { connectAgentEvents } from "../utils/canvas-agent-runtime";
 import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentPendingToolCard, AgentWorkingMessage, type CanvasAgentChatAttachment } from "./canvas-agent-chat-ui";
 
-const PANEL_MOTION_SECONDS = 0.5;
-
-export function CanvasServerAgentPanel({ snapshot, canUndoOps, collapsed, embedded, onApplyOps, onUndoOps }: { snapshot: CanvasAgentSnapshot; canUndoOps: boolean; collapsed?: boolean; embedded?: boolean; onApplyOps: (ops: CanvasAgentOp[]) => unknown; onUndoOps: () => CanvasAgentSnapshot | null }) {
+export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUndoOps }: { snapshot: CanvasAgentSnapshot; canUndoOps: boolean; onApplyOps: (ops: CanvasAgentOp[]) => unknown; onUndoOps: () => CanvasAgentSnapshot | null }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const user = useUserStore((state) => state.user);
     const effectiveConfig = useEffectiveConfig();
     const { message } = App.useApp();
-    const { width, prompt, sending, waiting, messages, sessions, activeSessionId, activeTab, confirmTools, pendingTool, setAgentState, addMessage: pushMessage } = useCanvasAgentStore();
-    const [resizing, setResizing] = useState(false);
+    const { prompt, sending, waiting, messages, sessions, activeSessionId, activeTab, confirmTools, pendingTool, setAgentState, addMessage: pushMessage } = useCanvasAgentStore();
     const [loadingSessions, setLoadingSessions] = useState(false);
     const listRef = useRef<HTMLDivElement>(null);
     const snapshotRef = useRef(snapshot);
@@ -259,26 +255,6 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, collapsed, embedd
         if (activeSessionId) void agentApi.postCanvasState({ sessionId: activeSessionId, snapshot: restored });
     };
 
-    const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-        event.preventDefault();
-        const startX = event.clientX;
-        const startWidth = width;
-        let nextWidth = startWidth;
-        const onMove = (moveEvent: PointerEvent) => {
-            nextWidth = clamp(startWidth + startX - moveEvent.clientX, 360, 760);
-            setAgentState({ width: nextWidth });
-        };
-        const onUp = () => {
-            localStorage.setItem("canvas-agent-panel-width", String(nextWidth));
-            window.removeEventListener("pointermove", onMove);
-            window.removeEventListener("pointerup", onUp);
-            setResizing(false);
-        };
-        setResizing(true);
-        window.addEventListener("pointermove", onMove);
-        window.addEventListener("pointerup", onUp);
-    };
-
     // 流式消息按 streamId 合并，同一 turn 的增量文本替换为最新全量。
     function addMessage(item: Omit<AgentChatItem, "id">) {
         const text = normalizeText(item.text);
@@ -295,8 +271,8 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, collapsed, embedd
         pushMessage(next);
     }
 
-    const content = (
-        <>
+    return (
+        <div className="flex min-h-0 flex-1 flex-col">
             <AgentPanelTabs
                 value={activeTab}
                 theme={theme}
@@ -345,30 +321,7 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, collapsed, embedd
                     />
                 </>
             )}
-        </>
-    );
-
-    if (embedded) return <div className="flex min-h-0 flex-1 flex-col">{content}</div>;
-
-    return (
-        <motion.div
-            className="relative z-[70] flex h-full shrink-0"
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: collapsed ? 0 : width + 1, opacity: collapsed ? 0 : 1 }}
-            transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
-            style={{ overflow: "clip", pointerEvents: collapsed ? "none" : undefined }}
-        >
-            <motion.aside
-                className="relative flex h-full shrink-0 flex-col border-l"
-                initial={{ x: 48 }}
-                animate={{ x: collapsed ? 28 : 0 }}
-                transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
-                style={{ width, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
-            >
-                <div className="absolute left-0 top-0 h-full w-1 cursor-col-resize transition hover:bg-current/20" onPointerDown={startResize} />
-                {content}
-            </motion.aside>
-        </motion.div>
+        </div>
     );
 }
 
@@ -458,8 +411,4 @@ function formatSessionTime(value?: string) {
     if (!value) return "";
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
-}
-
-function clamp(value: number, min: number, max: number) {
-    return Math.min(max, Math.max(min, value));
 }
