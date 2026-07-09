@@ -22,7 +22,7 @@ import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentPendingToolCa
 
 const PANEL_MOTION_SECONDS = 0.5;
 
-export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedded, headless, autoConnect, onApplyOps, onUndoOps }: { snapshot: CanvasAgentSnapshot; canUndoOps: boolean; collapsed?: boolean; embedded?: boolean; headless?: boolean; autoConnect?: boolean; onApplyOps: (ops: CanvasAgentOp[]) => unknown; onUndoOps: () => CanvasAgentSnapshot | null }) {
+export function CanvasServerAgentPanel({ snapshot, canUndoOps, collapsed, embedded, onApplyOps, onUndoOps }: { snapshot: CanvasAgentSnapshot; canUndoOps: boolean; collapsed?: boolean; embedded?: boolean; onApplyOps: (ops: CanvasAgentOp[]) => unknown; onUndoOps: () => CanvasAgentSnapshot | null }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const user = useUserStore((state) => state.user);
     const effectiveConfig = useEffectiveConfig();
@@ -149,9 +149,8 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
         void agentApi.postCanvasState({ sessionId: activeSessionIdRef.current, snapshot: next });
     }, []);
 
-    // 建会话 + 起 WS + 拉历史。enabled 时执行一次，snapshot.projectId 变更时重来。
+    // 建会话 + 起 WS + 拉历史。snapshot.projectId 变更时重来。
     useEffect(() => {
-        if (headless && !autoConnect) return;
         if (startedRef.current) return;
         const canvasId = snapshot.projectId;
         if (!canvasId) return;
@@ -168,7 +167,7 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
                 await loadSession(session.id);
                 await agentApi.postCanvasState({ sessionId: session.id, snapshot: snapshotRef.current });
             } catch (error) {
-                if (!cancelled && !headless) message.error(error instanceof Error ? error.message : "连接画布 Agent 失败");
+                if (!cancelled) message.error(error instanceof Error ? error.message : "连接画布 Agent 失败");
                 setAgentState({ connected: false, activity: "连接失败" });
             }
         })();
@@ -349,8 +348,7 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
         </>
     );
 
-    if (headless) return null;
-    if (embedded) return content;
+    if (embedded) return <div className="flex min-h-0 flex-1 flex-col">{content}</div>;
 
     return (
         <motion.div
