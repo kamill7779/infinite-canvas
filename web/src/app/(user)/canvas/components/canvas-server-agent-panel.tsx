@@ -35,6 +35,7 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
     const canvasIdRef = useRef(snapshot.projectId);
     const modelRef = useRef(effectiveConfig.textModel || effectiveConfig.model);
     const startedRef = useRef(false);
+    const streamTextRef = useRef(new Map<string, string>());
 
     const postTool = async (body: { callId: string; sessionId: string; result?: unknown; error?: string; declined?: boolean }) => {
         if (!body.sessionId) throw new Error("会话未就绪");
@@ -90,6 +91,7 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
         if (!sessionId) return;
         try {
             const detail = await agentApi.getAgentSession(sessionId);
+            streamTextRef.current.clear();
             setAgentState({ messages: historyToChatItems(detail.messages) });
         } catch (error) {
             message.error(error instanceof Error ? error.message : "读取会话失败");
@@ -178,10 +180,13 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
 
     const handleDelta = useCallback((turnId: string, text: string) => {
         if (!text) return;
-        addMessage({ role: "assistant", title: "Agent", text, streamId: turnId });
+        const next = (streamTextRef.current.get(turnId) || "") + text;
+        streamTextRef.current.set(turnId, next);
+        addMessage({ role: "assistant", title: "Agent", text: next, streamId: turnId });
     }, []);
 
-    const handleDone = useCallback((_turnId: string, status: string, doneMessage: string) => {
+    const handleDone = useCallback((turnId: string, status: string, doneMessage: string) => {
+        if (turnId) streamTextRef.current.delete(turnId);
         if (status === "error" && doneMessage) {
             addMessage({ role: "error", title: "错误", text: doneMessage });
         } else if (status === "stopped" && doneMessage) {
@@ -221,6 +226,7 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
         if (!canvasId) return;
         startedRef.current = true;
         resetForCanvas(canvasId);
+        streamTextRef.current.clear();
         canvasIdRef.current = canvasId;
         activeSessionIdRef.current = "";
         let disconnect: (() => void) | null = null;
@@ -332,6 +338,7 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
             await declinePendingForSwitch("已切换到新会话");
             const session = await agentApi.createAgentSession({ canvasId, model: modelRef.current });
             activeSessionIdRef.current = session.id;
+            streamTextRef.current.clear();
             setAgentState({
                 sessions: [session, ...sessions],
                 activeSessionId: session.id,
@@ -360,6 +367,7 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
                 await declinePendingForSwitch("已切换会话，取消待确认工具");
             }
             activeSessionIdRef.current = session.id;
+            streamTextRef.current.clear();
             setAgentState({ activeSessionId: session.id, pendingTool: null, waiting: false, sending: false, messages: [], activeTab: "chat" });
             await loadSession(session.id);
             await agentApi.postCanvasState({ sessionId: session.id, snapshot: snapshotRef.current });
@@ -378,7 +386,7 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
         }
     };
 
-    // 流式消息按 streamId 合并，同一 turn 的增量文本替换为最新全量。
+    // 流式消息按 streamId 合并；handleDelta 负责把后端增量片段累积成当前全量文本。
     function addMessage(item: Omit<AgentChatItem, "id">) {
         const text = normalizeText(item.text);
         if (!text && !item.attachments?.length) return;
