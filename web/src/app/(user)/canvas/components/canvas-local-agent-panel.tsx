@@ -89,12 +89,21 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
         setAgentState({ activity: "执行画布操作", waiting: true });
         const next = onApplyOpsRef.current(ops) as CanvasAgentSnapshot;
         addMessage({ role: "tool", title: "画布操作完成", text: summarizeCanvasAgentOps(ops) || "画布操作", detail: { callId, ops } });
-        await agentApi.postToolResult({ callId, result: next });
+        await agentApi.postToolResult({ callId, result: { ok: true, applied: ops.length } });
         if (activeSessionIdRef.current) await agentApi.postCanvasState({ sessionId: activeSessionIdRef.current, snapshot: next });
     }, [setAgentState]);
 
     const handleToolCall = useCallback(async (callId: string, name: string, input: unknown) => {
         const ops = expandCanvasTool(name, input, snapshotRef.current);
+        // Server-synthesized internal ops (e.g. image node placement) bypass the confirm gate.
+        if (callId.startsWith("gen-")) {
+            try {
+                await applyToolCall(callId, ops);
+            } catch (error) {
+                await agentApi.postToolResult({ callId, error: error instanceof Error ? error.message : "画布操作失败" });
+            }
+            return;
+        }
         if (confirmToolsRef.current) {
             if (pendingToolRef.current) {
                 await agentApi.postToolResult({ callId, error: "仍有待确认的画布工具调用" });
