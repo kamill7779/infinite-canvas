@@ -9,10 +9,13 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { useEffectiveConfig } from "@/stores/use-config-store";
+import { useAuthStore } from "@/stores/use-auth-store";
 import * as agentApi from "@/services/api/agent";
 import type { AgentMessage, AgentSession } from "@/services/api/agent";
+import type { ImageGenEvent } from "@/services/api/image";
 import { useCanvasAgentStore, type AgentAttachment, type AgentChatItem, type AgentPendingToolCall } from "../stores/use-canvas-agent-store";
 import { summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "../utils/canvas-agent-ops";
+import type { CanvasNodeMetadata } from "../types";
 import { expandCanvasTool } from "../utils/canvas-agent-tools";
 import { connectAgentEvents } from "../utils/canvas-agent-runtime";
 import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentPendingToolCard, AgentWorkingMessage, type CanvasAgentChatAttachment } from "./canvas-agent-chat-ui";
@@ -119,6 +122,24 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
         setAgentState({ activity: status === "error" ? "出错" : "完成", waiting: false, sending: false });
     }, [setAgentState]);
 
+    const handleImageResult = useCallback((event: Exclude<ImageGenEvent, { type: "ping" }>) => {
+        const nodeId = event.clientRequestId;
+        if (!nodeId || !activeSessionIdRef.current) return;
+        let metadata: CanvasNodeMetadata;
+        if (event.type === "image.success") {
+            metadata = { content: event.images?.[0]?.url, status: "success", errorDetails: undefined };
+            if (typeof event.balance === "number") useAuthStore.getState().setBalance(event.balance);
+        } else if (event.type === "image.failed") {
+            metadata = { status: "error", errorDetails: event.errorMsg };
+            if (typeof event.balance === "number") useAuthStore.getState().setBalance(event.balance);
+        } else {
+            metadata = { status: "loading" };
+        }
+        const ops: CanvasAgentOp[] = [{ type: "update_node", id: nodeId, metadata }];
+        const next = onApplyOpsRef.current(ops) as CanvasAgentSnapshot;
+        void agentApi.postCanvasState({ sessionId: activeSessionIdRef.current, snapshot: next });
+    }, []);
+
     // 建会话 + 起 WS + 拉历史。enabled 时执行一次，snapshot.projectId 变更时重来。
     useEffect(() => {
         if (headless && !autoConnect) return;
@@ -142,7 +163,7 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
                 setAgentState({ connected: false, activity: "连接失败" });
             }
         })();
-        disconnect = connectAgentEvents({ onDelta: handleDelta, onToolCall: handleToolCall, onDone: handleDone });
+        disconnect = connectAgentEvents({ onDelta: handleDelta, onToolCall: handleToolCall, onDone: handleDone, onImageResult: handleImageResult });
         return () => {
             cancelled = true;
             startedRef.current = false;

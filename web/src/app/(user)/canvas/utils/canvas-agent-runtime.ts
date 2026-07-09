@@ -1,12 +1,14 @@
 import { agentEventsWsUrl } from "@/services/api/agent";
+import type { ImageGenEvent } from "@/services/api/image";
 
 type AgentEventHandlers = {
     onDelta: (turnId: string, text: string) => void;
     onToolCall: (callId: string, name: string, input: unknown) => void;
     onDone: (turnId: string, status: string, message: string) => void;
+    onImageResult?: (event: Exclude<ImageGenEvent, { type: "ping" }>) => void;
 };
 
-// 连接平台事件网关（与生图共用同一条 WS）。只处理 agent.* 事件，ping / image.* 忽略。
+// 连接平台事件网关（与生图共用同一条 WS）。处理 agent.* 和 image.* 事件，ping 忽略。
 // Cookie 同源自动鉴权；断线后短退避自动重连，返回断开函数。
 export function connectAgentEvents(handlers: AgentEventHandlers): () => void {
     let socket: WebSocket | null = null;
@@ -28,6 +30,7 @@ export function connectAgentEvents(handlers: AgentEventHandlers): () => void {
             if (data.type === "agent.delta") handlers.onDelta(String(data.turnId || ""), String(data.text || ""));
             else if (data.type === "agent.tool_call") handlers.onToolCall(String(data.callId || ""), String(data.name || ""), data.input);
             else if (data.type === "agent.done") handlers.onDone(String(data.turnId || ""), String(data.status || ""), String(data.message || ""));
+            else if ((data.type === "image.running" || data.type === "image.success" || data.type === "image.failed") && handlers.onImageResult) handlers.onImageResult(data as Exclude<ImageGenEvent, { type: "ping" }>);
         };
         socket.onclose = () => {
             socket = null;
