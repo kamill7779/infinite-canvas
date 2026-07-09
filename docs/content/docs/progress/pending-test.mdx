@@ -6,7 +6,9 @@ description: 当前版本已实现但仍需人工验证的变更项
 # 待测试
 
 - 服务端画布 Agent：右侧仅保留统一 Agent UI，无本机/云端模式切换；登录后可新建会话、多轮对话，工具在浏览器内执行并可开关“工具确认”。
-- 服务端画布 Agent：普通闲聊（plain chat）不应进入画布工具循环；涉及读写画布时才触发工具调用与确认。
+- 服务端画布 Agent：普通闲聊（plain chat）不应进入画布工具循环；涉及读写画布时才触发工具调用与确认。系统提示已明确问候/无需画布操作时用纯文本回答；后端不强制 `tool_choice=required`。
+- 服务端画布 Agent：连续 2 步仅静默调用 `canvas_get_state`（或其它 ReadCanvas、无可见文本）时应停止本轮并提示直接文字回答，避免只读空转。
+- 服务端画布 Agent：上游非 2xx 若返回 HTML 错误页，前端/事件中应看到短错误（如「上游 502: 返回了 HTML 错误页」）而非整页 HTML；JSON `error.message` 优先展示。
 - 服务端画布 Agent：断线重连后会话与消息可恢复；拒绝/确认工具、撤销上一次工具写入行为符合预期。
 - Codex 插件 / open-canvas 技能：只打开 `mode=new|recent|choose` 画布 URL，不再启动 `npx @basketikun/canvas-agent`，不再拼接 `agentUrl`/`agentToken`；打开后引导使用页内 Agent。
 - 产品文档：功能介绍与 Codex 插件文档已去掉本机 Agent 路径说明；历史 CHANGELOG `v0.3.0` 条目可保留。
