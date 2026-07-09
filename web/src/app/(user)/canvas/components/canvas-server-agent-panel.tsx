@@ -36,14 +36,29 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
     const modelRef = useRef(effectiveConfig.textModel || effectiveConfig.model);
     const startedRef = useRef(false);
 
-    const requireSessionId = () => {
-        const sessionId = activeSessionIdRef.current;
-        if (!sessionId) throw new Error("会话未就绪");
-        return sessionId;
+    const postTool = async (body: { callId: string; sessionId: string; result?: unknown; error?: string; declined?: boolean }) => {
+        if (!body.sessionId) throw new Error("会话未就绪");
+        await agentApi.postToolResult(body);
     };
 
-    const postTool = async (body: { callId: string; result?: unknown; error?: string; declined?: boolean }) => {
-        await agentApi.postToolResult({ ...body, sessionId: requireSessionId() });
+    const reportSnapshotError = (error: unknown, title = "快照上报失败") => {
+        const text = error instanceof Error ? error.message : title;
+        addMessage({ role: "error", title, text });
+        message.error(text);
+    };
+
+    /** 切会话时主动 decline 旧 pending，避免 worker 等到超时 */
+    const declinePendingForSwitch = async (reason: string) => {
+        const tool = pendingToolRef.current;
+        if (!tool) return;
+        pendingToolRef.current = null;
+        setAgentState({ pendingTool: null });
+        try {
+            await postTool({ callId: tool.requestId, sessionId: tool.sessionId, declined: true });
+            addMessage({ role: "tool", title: "已取消待确认工具", text: reason });
+        } catch (error) {
+            addMessage({ role: "error", title: "取消待确认工具失败", text: error instanceof Error ? error.message : "取消失败" });
+        }
     };
 
     useEffect(() => {
@@ -95,25 +110,32 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
         }
     }, [message, setAgentState]);
 
-    const applyToolCall = useCallback(async (callId: string, ops: CanvasAgentOp[]) => {
+    // 先成功上报新快照，再回传 tool-result，避免 worker 下一步读到旧画布。
+    const applyToolCall = useCallback(async (callId: string, sessionId: string, ops: CanvasAgentOp[]) => {
+        if (!sessionId) throw new Error("会话未就绪");
         setAgentState({ activity: "执行画布操作", waiting: true });
         const next = onApplyOpsRef.current(ops) as CanvasAgentSnapshot;
+        await agentApi.postCanvasState({ sessionId, snapshot: next });
         addMessage({ role: "tool", title: "画布操作完成", text: summarizeCanvasAgentOps(ops) || "画布操作", detail: { callId, ops } });
-        await postTool({ callId, result: { ok: true, applied: ops.length } });
-        await agentApi.postCanvasState({ sessionId: requireSessionId(), snapshot: next });
+        await postTool({ callId, sessionId, result: { ok: true, applied: ops.length } });
     }, [setAgentState]);
 
-    const handleToolCall = useCallback(async (callId: string, name: string, input: unknown) => {
+    const handleToolCall = useCallback(async (callId: string, name: string, input: unknown, meta: { sessionId: string; canvasId: string; turnId: string }) => {
+        const sessionId = meta.sessionId || activeSessionIdRef.current;
+        if (!sessionId) {
+            addMessage({ role: "error", title: "工具失败", text: "事件缺少 sessionId，已忽略" });
+            return;
+        }
         const ops = expandCanvasTool(name, input, snapshotRef.current);
         // Server-synthesized internal ops (e.g. image node placement) bypass the confirm gate.
         if (callId.startsWith("gen-")) {
             try {
-                await applyToolCall(callId, ops);
+                await applyToolCall(callId, sessionId, ops);
             } catch (error) {
                 const msg = error instanceof Error ? error.message : "画布操作失败";
                 addMessage({ role: "error", title: "工具回传失败", text: msg });
                 try {
-                    await postTool({ callId, error: msg });
+                    await postTool({ callId, sessionId, error: msg });
                 } catch {
                     /* 二次失败仅提示 */
                 }
@@ -123,24 +145,31 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
         if (confirmToolsRef.current) {
             if (pendingToolRef.current) {
                 try {
-                    await postTool({ callId, error: "仍有待确认的画布工具调用" });
+                    await postTool({ callId, sessionId, error: "仍有待确认的画布工具调用" });
                 } catch (error) {
                     addMessage({ role: "error", title: "工具回传失败", text: error instanceof Error ? error.message : "工具回传失败" });
                 }
                 return;
             }
-            const next: AgentPendingToolCall = { requestId: callId, name, input: { ops } };
+            const next: AgentPendingToolCall = {
+                requestId: callId,
+                name,
+                input: { ops },
+                sessionId,
+                canvasId: meta.canvasId,
+                turnId: meta.turnId,
+            };
             pendingToolRef.current = next;
             setAgentState({ pendingTool: next, activity: "等待确认", waiting: false });
             return;
         }
         try {
-            await applyToolCall(callId, ops);
+            await applyToolCall(callId, sessionId, ops);
         } catch (error) {
             const msg = error instanceof Error ? error.message : "画布操作失败";
             addMessage({ role: "error", title: "工具失败", text: msg });
             try {
-                await postTool({ callId, error: msg });
+                await postTool({ callId, sessionId, error: msg });
             } catch {
                 /* ignore */
             }
@@ -241,7 +270,9 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
     useEffect(() => {
         const sessionId = activeSessionId;
         if (!sessionId) return;
-        const timer = setTimeout(() => void agentApi.postCanvasState({ sessionId, snapshot }), 300);
+        const timer = setTimeout(() => {
+            void agentApi.postCanvasState({ sessionId, snapshot }).catch((error) => reportSnapshotError(error));
+        }, 300);
         return () => clearTimeout(timer);
     }, [activeSessionId, snapshot]);
 
@@ -268,12 +299,12 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
         pendingToolRef.current = null;
         setAgentState({ pendingTool: null });
         try {
-            await applyToolCall(tool.requestId, tool.input?.ops || []);
+            await applyToolCall(tool.requestId, tool.sessionId, tool.input?.ops || []);
         } catch (error) {
             const msg = error instanceof Error ? error.message : "画布操作失败";
             addMessage({ role: "tool", title: "工具失败", text: msg, detail: tool });
             try {
-                await postTool({ callId: tool.requestId, error: msg });
+                await postTool({ callId: tool.requestId, sessionId: tool.sessionId, error: msg });
             } catch (postErr) {
                 addMessage({ role: "error", title: "工具回传失败", text: postErr instanceof Error ? postErr.message : "工具回传失败" });
             }
@@ -287,7 +318,7 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
         setAgentState({ pendingTool: null, activity: "已取消", waiting: false });
         addMessage({ role: "tool", title: "拒绝执行", text: summarizeCanvasAgentOps(tool.input?.ops || []) || tool.name, detail: { callId: tool.requestId, name: tool.name } });
         try {
-            await postTool({ callId: tool.requestId, declined: true });
+            await postTool({ callId: tool.requestId, sessionId: tool.sessionId, declined: true });
         } catch (error) {
             addMessage({ role: "error", title: "工具回传失败", text: error instanceof Error ? error.message : "工具回传失败" });
         }
@@ -298,9 +329,9 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
         if (!canvasId) return;
         setLoadingSessions(true);
         try {
+            await declinePendingForSwitch("已切换到新会话");
             const session = await agentApi.createAgentSession({ canvasId, model: modelRef.current });
             activeSessionIdRef.current = session.id;
-            pendingToolRef.current = null;
             setAgentState({
                 sessions: [session, ...sessions],
                 activeSessionId: session.id,
@@ -311,7 +342,11 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
                 activeTab: "chat",
                 activity: "新对话",
             });
-            await agentApi.postCanvasState({ sessionId: session.id, snapshot: snapshotRef.current });
+            try {
+                await agentApi.postCanvasState({ sessionId: session.id, snapshot: snapshotRef.current });
+            } catch (error) {
+                reportSnapshotError(error, "新会话快照上报失败");
+            }
         } catch (error) {
             message.error(error instanceof Error ? error.message : "新建会话失败");
         } finally {
@@ -320,11 +355,17 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
     };
 
     const openSession = async (session: AgentSession) => {
-        activeSessionIdRef.current = session.id;
-        pendingToolRef.current = null;
-        setAgentState({ activeSessionId: session.id, pendingTool: null, waiting: false, sending: false, messages: [], activeTab: "chat" });
-        await loadSession(session.id);
-        await agentApi.postCanvasState({ sessionId: session.id, snapshot: snapshotRef.current });
+        try {
+            if (session.id !== activeSessionIdRef.current) {
+                await declinePendingForSwitch("已切换会话，取消待确认工具");
+            }
+            activeSessionIdRef.current = session.id;
+            setAgentState({ activeSessionId: session.id, pendingTool: null, waiting: false, sending: false, messages: [], activeTab: "chat" });
+            await loadSession(session.id);
+            await agentApi.postCanvasState({ sessionId: session.id, snapshot: snapshotRef.current });
+        } catch (error) {
+            reportSnapshotError(error, "打开会话快照上报失败");
+        }
     };
 
     const undoLastTool = () => {
@@ -332,7 +373,9 @@ export function CanvasServerAgentPanel({ snapshot, canUndoOps, onApplyOps, onUnd
         if (!restored) return;
         setAgentState({ activity: "已撤销" });
         addMessage({ role: "tool", title: "已撤销", text: "上一次工具操作", detail: restored });
-        if (activeSessionId) void agentApi.postCanvasState({ sessionId: activeSessionId, snapshot: restored });
+        if (activeSessionId) {
+            void agentApi.postCanvasState({ sessionId: activeSessionId, snapshot: restored }).catch((error) => reportSnapshotError(error, "撤销后快照上报失败"));
+        }
     };
 
     // 流式消息按 streamId 合并，同一 turn 的增量文本替换为最新全量。

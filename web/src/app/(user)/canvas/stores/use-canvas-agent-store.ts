@@ -6,7 +6,15 @@ import type { CanvasAgentOp } from "../utils/canvas-agent-ops";
 export type AgentChatRole = "user" | "assistant" | "system" | "tool" | "error";
 export type AgentAttachment = { id: string; name: string; type: string; size: number; url: string; dataUrl: string };
 export type AgentChatItem = { id: string; role: AgentChatRole; title?: string; text: string; meta?: string; detail?: unknown; attachments?: AgentAttachment[]; streamId?: string };
-export type AgentPendingToolCall = { requestId: string; name: string; input?: { ops?: CanvasAgentOp[] } };
+export type AgentPendingToolCall = {
+    requestId: string;
+    name: string;
+    input?: { ops?: CanvasAgentOp[] };
+    /** 事件原始 session，批准/拒绝必须用它回传，禁止用当时 active session */
+    sessionId: string;
+    canvasId?: string;
+    turnId?: string;
+};
 export type AgentPanelTab = "chat" | "history";
 
 type CanvasAgentStore = {

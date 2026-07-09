@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-+ [修复] 服务端 Agent 事件按会话/画布隔离；收起面板不丢工具调用；只读防循环误杀与错误提示完善。
++ [修复] 服务端 Agent：快照先于 tool-result、Redis 写失败上抛、pending 绑定 session；事件按会话/画布隔离与收起不断线。
 + [调整] 移除本机 canvas-agent，统一使用服务端 Agent。
 + [新增] 渠道兼容Gemini格式。
 + [新增] 新增Codex App插件支持。

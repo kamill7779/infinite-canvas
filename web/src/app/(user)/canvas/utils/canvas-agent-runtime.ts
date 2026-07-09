@@ -17,12 +17,16 @@ type AgentEventHandlers = {
     getScope?: () => AgentEventScope;
 };
 
-function matchesScope(data: Record<string, unknown>, scope: AgentEventScope): boolean {
+/** 有 scope 时缺 sessionId/canvasId 的旧事件直接丢弃，避免滚动部署期间串扰。 */
+export function matchesScope(data: Record<string, unknown>, scope: AgentEventScope): boolean {
     const sessionId = String(data.sessionId || "");
     const canvasId = String(data.canvasId || "");
-    // 旧事件可能无隔离字段：为兼容暂放行；新后端均带字段
-    if (scope.sessionId && sessionId && sessionId !== scope.sessionId) return false;
-    if (scope.canvasId && canvasId && canvasId !== scope.canvasId) return false;
+    if (scope.sessionId) {
+        if (!sessionId || sessionId !== scope.sessionId) return false;
+    }
+    if (scope.canvasId) {
+        if (!canvasId || canvasId !== scope.canvasId) return false;
+    }
     return true;
 }
 
