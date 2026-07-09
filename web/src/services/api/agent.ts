@@ -14,9 +14,9 @@ export type AgentMessageContent =
 export type AgentMessage = { id: string; role: AgentMessageRole; content: AgentMessageContent; turnId?: string; step?: number; createdAt: string };
 export type AgentSessionDetail = { session: AgentSession; messages: AgentMessage[] };
 
-export type AgentDeltaEvent = { type: "agent.delta"; turnId: string; text: string };
-export type AgentToolCallEvent = { type: "agent.tool_call"; callId: string; name: string; input: unknown };
-export type AgentDoneEvent = { type: "agent.done"; turnId: string; status: string; message: string };
+export type AgentDeltaEvent = { type: "agent.delta"; turnId: string; sessionId?: string; canvasId?: string; text: string };
+export type AgentToolCallEvent = { type: "agent.tool_call"; callId: string; name: string; input: unknown; sessionId?: string; canvasId?: string; turnId?: string };
+export type AgentDoneEvent = { type: "agent.done"; turnId: string; sessionId?: string; canvasId?: string; status: string; message: string };
 export type AgentEvent = AgentDeltaEvent | AgentToolCallEvent | AgentDoneEvent;
 
 async function agentRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -26,6 +26,7 @@ async function agentRequest<T>(path: string, init?: RequestInit): Promise<T> {
         headers: init?.body ? { "Content-Type": "application/json", ...init?.headers } : init?.headers,
     });
     const payload = (await res.json().catch(() => null)) as { code?: number; data?: T | null; msg?: string } | null;
+    if (!res.ok) throw new Error(payload?.msg || `请求失败 (${res.status})`);
     if (!payload) throw new Error("服务器无响应");
     if (payload.code !== 0 || payload.data == null) throw new Error(payload.msg || "请求失败");
     return payload.data;
@@ -48,21 +49,11 @@ export async function startTurn(body: { sessionId: string; prompt: string }): Pr
 }
 
 export async function postCanvasState(body: { sessionId: string; snapshot: CanvasAgentSnapshot }): Promise<void> {
-    await fetch(apiUrl("/api/agent/canvas-state"), {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-    }).catch(() => undefined);
+    await agentRequest<{ ok: boolean }>("/api/agent/canvas-state", { method: "POST", body: JSON.stringify(body) });
 }
 
-export async function postToolResult(body: { callId: string; result?: unknown; error?: string; declined?: boolean }): Promise<void> {
-    await fetch(apiUrl("/api/agent/tool-result"), {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-    }).catch(() => undefined);
+export async function postToolResult(body: { callId: string; sessionId: string; result?: unknown; error?: string; declined?: boolean }): Promise<void> {
+    await agentRequest<{ ok: boolean }>("/api/agent/tool-result", { method: "POST", body: JSON.stringify(body) });
 }
 
 export function agentEventsWsUrl(): string {

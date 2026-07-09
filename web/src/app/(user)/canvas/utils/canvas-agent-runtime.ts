@@ -1,12 +1,30 @@
 import { agentEventsWsUrl } from "@/services/api/agent";
 import type { ImageGenEvent } from "@/services/api/image";
 
-type AgentEventHandlers = {
-    onDelta: (turnId: string, text: string) => void;
-    onToolCall: (callId: string, name: string, input: unknown) => void;
-    onDone: (turnId: string, status: string, message: string) => void;
-    onImageResult?: (event: Exclude<ImageGenEvent, { type: "ping" }>) => void;
+export type AgentEventScope = {
+    /** 当前活跃会话；有值时过滤其它 session 的 agent.* */
+    sessionId?: string;
+    /** 当前画布；有值时过滤其它 canvas 的 agent.* */
+    canvasId?: string;
 };
+
+type AgentEventHandlers = {
+    onDelta: (turnId: string, text: string, meta: { sessionId: string; canvasId: string }) => void;
+    onToolCall: (callId: string, name: string, input: unknown, meta: { sessionId: string; canvasId: string; turnId: string }) => void;
+    onDone: (turnId: string, status: string, message: string, meta: { sessionId: string; canvasId: string }) => void;
+    onImageResult?: (event: Exclude<ImageGenEvent, { type: "ping" }>) => void;
+    /** 动态 scope：每次事件用最新值过滤，避免闭包过期 */
+    getScope?: () => AgentEventScope;
+};
+
+function matchesScope(data: Record<string, unknown>, scope: AgentEventScope): boolean {
+    const sessionId = String(data.sessionId || "");
+    const canvasId = String(data.canvasId || "");
+    // 旧事件可能无隔离字段：为兼容暂放行；新后端均带字段
+    if (scope.sessionId && sessionId && sessionId !== scope.sessionId) return false;
+    if (scope.canvasId && canvasId && canvasId !== scope.canvasId) return false;
+    return true;
+}
 
 // 连接平台事件网关（与生图共用同一条 WS）。处理 agent.* 和 image.* 事件，ping 忽略。
 // Cookie 同源自动鉴权；断线后短退避自动重连，返回断开函数。
@@ -27,9 +45,14 @@ export function connectAgentEvents(handlers: AgentEventHandlers): () => void {
         socket.onmessage = (event) => {
             const data = parse(event.data);
             if (!data) return;
-            if (data.type === "agent.delta") handlers.onDelta(String(data.turnId || ""), String(data.text || ""));
-            else if (data.type === "agent.tool_call") handlers.onToolCall(String(data.callId || ""), String(data.name || ""), data.input);
-            else if (data.type === "agent.done") handlers.onDone(String(data.turnId || ""), String(data.status || ""), String(data.message || ""));
+            const scope = handlers.getScope?.() || {};
+            if (data.type === "agent.delta" || data.type === "agent.tool_call" || data.type === "agent.done") {
+                if (!matchesScope(data, scope)) return;
+            }
+            const meta = { sessionId: String(data.sessionId || ""), canvasId: String(data.canvasId || ""), turnId: String(data.turnId || "") };
+            if (data.type === "agent.delta") handlers.onDelta(String(data.turnId || ""), String(data.text || ""), meta);
+            else if (data.type === "agent.tool_call") handlers.onToolCall(String(data.callId || ""), String(data.name || ""), data.input, meta);
+            else if (data.type === "agent.done") handlers.onDone(String(data.turnId || ""), String(data.status || ""), String(data.message || ""), meta);
             else if ((data.type === "image.running" || data.type === "image.success" || data.type === "image.failed") && handlers.onImageResult) handlers.onImageResult(data as Exclude<ImageGenEvent, { type: "ping" }>);
         };
         socket.onclose = () => {

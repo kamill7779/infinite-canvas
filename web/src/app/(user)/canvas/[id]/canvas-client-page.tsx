@@ -2439,7 +2439,8 @@ function InfiniteCanvasPage() {
         [insertAssistantImage, insertAssistantText, screenToCanvas, size.height, size.width],
     );
 
-    const assistantOpen = assistantMounted && !assistantCollapsed;
+    // Agent runtime 页面级常驻（projectLoaded 后即挂载）：收起只做 UI 折叠，不卸载 WS / 工具确认。
+    const assistantOpen = !assistantCollapsed && !assistantClosing;
     const openAgent = () => {
         if (agentCloseTimerRef.current) {
             clearTimeout(agentCloseTimerRef.current);
@@ -2450,12 +2451,11 @@ function InfiniteCanvasPage() {
         setAssistantCollapsed(false);
     };
     const closeAgent = () => {
-        if (!assistantMounted || assistantClosing) return;
+        if (assistantClosing || assistantCollapsed) return;
         setAssistantCollapsed(true);
         setAssistantClosing(true);
         agentCloseTimerRef.current = setTimeout(() => {
             agentCloseTimerRef.current = null;
-            setAssistantMounted(false);
             setAssistantClosing(false);
         }, CANVAS_AGENT_PANEL_MOTION_MS);
     };
@@ -2765,13 +2765,14 @@ function InfiniteCanvasPage() {
 
                 <AssetPickerModal open={assetPickerOpen} onInsert={handleAssetInsert} onClose={() => setAssetPickerOpen(false)} />
             </section>
-            {assistantMounted ? (
+            {/* 画布加载后常驻 Agent host；closing 只控制侧栏可见宽度，不卸载 runtime */}
+            {projectLoaded ? (
                 <CanvasAssistantPanel
                     snapshot={agentSnapshot}
                     onApplyOps={applyAgentOps}
                     canUndoOps={Boolean(agentUndoSnapshot)}
                     onUndoOps={undoAgentOps}
-                    closing={assistantClosing}
+                    closing={!assistantOpen}
                     onCollapse={closeAgent}
                 />
             ) : null}

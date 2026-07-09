@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [修复] 服务端 Agent 事件按会话/画布隔离；收起面板不丢工具调用；只读防循环误杀与错误提示完善。
 + [调整] 移除本机 canvas-agent，统一使用服务端 Agent。
 + [新增] 渠道兼容Gemini格式。
 + [新增] 新增Codex App插件支持。

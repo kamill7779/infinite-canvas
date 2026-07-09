@@ -19,13 +19,17 @@ type CanvasAgentStore = {
     messages: AgentChatItem[];
     sessions: AgentSession[];
     activeSessionId: string;
+    /** 当前绑定的画布 id，切换画布时用于清理 */
+    canvasId: string;
     model: string;
     activeTab: AgentPanelTab;
     confirmTools: boolean;
     activity: string;
     pendingTool: AgentPendingToolCall | null;
-    setAgentState: (patch: Partial<Omit<CanvasAgentStore, "setAgentState" | "addMessage">>) => void;
+    setAgentState: (patch: Partial<Omit<CanvasAgentStore, "setAgentState" | "addMessage" | "resetForCanvas">>) => void;
     addMessage: (item: AgentChatItem) => void;
+    /** 切换画布时清空会话态，保留宽度/工具确认偏好 */
+    resetForCanvas: (canvasId: string) => void;
 };
 
 export const useCanvasAgentStore = create<CanvasAgentStore>((set) => ({
@@ -38,6 +42,7 @@ export const useCanvasAgentStore = create<CanvasAgentStore>((set) => ({
     messages: [],
     sessions: [],
     activeSessionId: "",
+    canvasId: "",
     model: "",
     activeTab: "chat",
     confirmTools: true,
@@ -45,4 +50,21 @@ export const useCanvasAgentStore = create<CanvasAgentStore>((set) => ({
     pendingTool: null,
     setAgentState: (patch) => set(patch),
     addMessage: (item) => set((state) => ({ messages: [...state.messages.slice(-120), item] })),
+    resetForCanvas: (canvasId) =>
+        set((state) => ({
+            canvasId,
+            connected: false,
+            prompt: "",
+            sending: false,
+            waiting: false,
+            messages: [],
+            sessions: [],
+            activeSessionId: "",
+            activeTab: "chat" as AgentPanelTab,
+            activity: "就绪",
+            pendingTool: null,
+            // 保留 width / confirmTools
+            width: state.width,
+            confirmTools: state.confirmTools,
+        })),
 }));
